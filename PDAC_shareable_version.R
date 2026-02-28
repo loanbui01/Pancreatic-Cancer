@@ -69,8 +69,6 @@ Idents(sr_1) <- "orig.ident"
 
 # QC visualization
 VlnPlot(sr_1, features = c("nCount_RNA","nFeature_RNA","percent.mt"), ncol = 3, pt.size = 0)
-FeatureScatter(sr_1, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
-FeatureScatter(sr_1, feature1 = "nCount_RNA", feature2 = "percent.mt")
 
 # Filter low-quality cells
 sr_1 <- subset(
@@ -122,6 +120,9 @@ type <- ifelse(grepl("^PDAC", sr_2$orig.ident), "Tumor", "Normal")
 sr_2$orig.ident <- paste0(type, "-", sprintf("%02d", num))
 
 Idents(sr_2) <- "orig.ident"
+
+# QC visualization
+VlnPlot(sr_2, features = c("nCount_RNA","nFeature_RNA","percent.mt"), ncol = 3, pt.size = 0)
 
 # QC filtering
 sr_2 <- subset(
@@ -177,6 +178,9 @@ sr_3$orig.ident <- paste0(type, "-", num)
 
 Idents(sr_3) <- "orig.ident"
 
+# QC visualization
+VlnPlot(sr_3, features = c("nCount_RNA","nFeature_RNA","percent.mt"), ncol = 3, pt.size = 0)
+
 # QC filtering
 sr_3 <- subset(
   sr_3,
@@ -218,6 +222,9 @@ obj_list <- lapply(files, function(f) {
 
 sr_4 <- merge(obj_list[[1]], y = obj_list[-1])
 Idents(sr_4) <- "orig.ident"
+
+# QC visualization
+VlnPlot(sr_4, features = c("nCount_RNA","nFeature_RNA","percent.mt"), ncol = 3, pt.size = 0)
 
 # QC + gene filtering
 sr_4[["percent.mt"]] <- PercentageFeatureSet(sr_4, pattern = "^MT-")
@@ -315,17 +322,34 @@ DimPlot(combined, group.by = "SingleR_label", label = TRUE)
 # MANUAL ANNOTATION SUPPORT
 #____________________________________________________________#
 
-top_markers <- markers %>%
-  group_by(cluster) %>%
-  slice_max(order_by = avg_log2FC, n = 5)
+canonical_markers <- c(
+  "CD79A", "CD3D", "NKG7", "COL1A1",
+  "CD68", "CD14", "CLDN5", "KRT18",
+  "TPSAB1", "SOX2", "PPBP", "CLEC4C"
+)
 
-nice_table <- top_markers %>%
-  arrange(cluster, desc(avg_log2FC)) %>%
-  group_by(cluster) %>%
-  summarise(
-    genes = paste0(gene, " (", round(avg_log2FC,2), ")", collapse = ", ")
-  )
+plots <- FeaturePlot(
+  combined,
+  features = canonical_markers,
+  ncol = 3,
+  combine = FALSE   # IMPORTANT: returns list of plots
+)
 
-write.csv(nice_table, "cluster_markers.csv")
+plots <- lapply(seq_along(plots), function(i) {
+  plots[[i]] +
+    ggtitle(canonical_markers[i]) +
+    theme(
+      plot.title = element_text(
+        size = 18,        # Larger title
+        face = "bold",
+        hjust = 0.5
+      ),
+      panel.border = element_rect(
+        color = "black",
+        fill = NA,
+        linewidth = 1
+      )
+    )
+})
 
-DotPlot(combined, features = unique(top_markers$gene)) + RotatedAxis()
+wrap_plots(plots, ncol = 3)

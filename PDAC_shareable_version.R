@@ -16,6 +16,13 @@ library(ggplot2)       # Visualization
 library(patchwork)     # Combine plots
 library(org.Hs.eg.db)  # Human gene annotation
 library(GEOquery)      # GEO access
+library(presto)        # Faster Wilconxon DEG
+library(pheatmap)      # Visualization
+library(stringr)
+library(scales)
+library(lme4)
+library(broom.mixed)
+library(forcats)
 
 #____________________________________________________________#
 # DATASET 1 — GSE278688
@@ -292,6 +299,18 @@ DimPlot(combined, reduction = "umap", label = TRUE)
 
 saveRDS(combined, "combined_PDAC_postHarmony_40PCs.rds")
 
+# I would recommend making the UMAP based on sample type after you have saved this object: 
+# Inspect unique names first (optional)
+unique(combined$orig.ident)
+
+# Create a new merged metadata column
+combined$Sample_Group <- str_remove(combined$orig.ident, "-.*")
+
+# Plot UMAP with merged grouping
+DimPlot(combined,
+        reduction = "umap",
+        group.by = "Sample_Group")
+
 #____________________________________________________________#
 # CLUSTER MARKERS
 #____________________________________________________________#
@@ -318,6 +337,11 @@ combined$SingleR_label <- pred$labels
 
 DimPlot(combined, group.by = "SingleR_label", label = TRUE)
 
+table(Idents(combined), combined$SingleR_label)       #Check agreement between clusters and singleR
+tab <- table(Idents(combined), combined$SingleR_label)
+tab_df <- as.data.frame.matrix(tab)
+write.csv(tab_df, "cluster_vs_SingleR.csv")
+
 #____________________________________________________________#
 # MANUAL ANNOTATION SUPPORT
 #____________________________________________________________#
@@ -327,6 +351,8 @@ canonical_markers <- c(
   "CD68", "CD14", "CLDN5", "KRT18",
   "TPSAB1", "SOX2", "PPBP", "CLEC4C"
 )
+
+# Checking 12 canonical markers
 
 plots <- FeaturePlot(
   combined,
@@ -353,3 +379,163 @@ plots <- lapply(seq_along(plots), function(i) {
 })
 
 wrap_plots(plots, ncol = 3)
+
+# You would then inspect the canonical markers before doing manual annotation: 
+
+# Make sure identities are clusters
+Idents(combined) <- "seurat_clusters"
+
+# Visualize marker distribution across clusters
+DotPlot(combined, features = canonical_markers) +
+  RotatedAxis() +
+  theme_classic()
+
+# Named vector mapping cluster number -> cell type
+annotation_map <- c(
+  "0" = "T cells", "1" = "T cells", "2" = "B cells", "3" = "NK cells",
+  "4" = "Epithelial cells", "5" = "T cells", "6" = "Fibroblasts",
+  "7" = "Macrophages/Monocytes", "8" = "T cells",
+  "9" = "Macrophages/Monocytes", "10" = "T cells",
+  "11" = "Endothelial cells", "12" = "Fibroblasts",
+  "13" = "B cells", "14" = "T cells",
+  "15" = "Epithelial cells", "16" = "B cells",
+  "17" = "Epithelial cells", "18" = "Mast cells",
+  "19" = "T cells", "20" = "Platelets",
+  "21" = "T cells", "22" = "T cells",
+  "23" = "T cells", "24" = "T cells",
+  "25" = "Epithelial cells", "26" = "T cells",
+  "27" = "Neuronal-like cells", "28" = "Specialized immune cells",
+  "29" = "T cells", "30" = "Epithelial cells",
+  "31" = "Epithelial cells", "32" = "Epithelial cells",
+  "33" = "B cells", "34" = "B cells",
+  "35" = "Epithelial cells", "36" = "B cells"
+)
+
+# Convert clusters to character
+clusters_char <- as.character(combined$seurat_clusters)
+
+# Map clusters to labels
+manual_labels <- annotation_map[clusters_char]
+
+# IMPORTANT: attach cell names
+names(manual_labels) <- colnames(combined)
+
+# Add metadata
+combined <- AddMetaData(
+  combined,
+  metadata = manual_labels,
+  col.name = "ManualAnnotation"
+)
+
+# Set identities
+Idents(combined) <- "ManualAnnotation"
+
+# Plot
+DimPlot(combined, label = TRUE, repel = TRUE)
+
+#____________________________________________________________#
+# FIGURE 7 - CELL TYPE COMPOSITION
+#____________________________________________________________#
+
+meta <- as.data.frame(combined@meta.data)
+
+meta <- meta %>%
+  filter(!is.na(ManualAnnotation),
+         tissue %in% c("Adjacent_normal", "Tumor", "PBMC"))
+
+cell_order <- meta$ManualAnnotation %>%
+  table() %>%
+  sort(increasing = TRUE) %>%
+  names()
+
+colnames(combined@meta.data)
+
+meta$ManualAnnotation <- factor(meta$ManualAnnotation, levels = cell_order)
+combined$ManualAnnotation <- meta$ManualAnnotation
+
+# % Cell type by Condition
+df_condition <- meta %>%
+  filter(tissue %in% c("Adjacent_normal", "Tumor")) %>%
+  group_by(ManualAnnotation, tissue) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(ManualAnnotation) %>%
+  mutate(percent = n / sum(n) * 100)
+
+p1 <- ggplot(df_condition,
+             aes(x = ManualAnnotation, y = percent, fill = tissue)) +
+  geom_bar(stat = "identity", width = 0.8) +
+  coord_flip() +
+  scale_y_continuous(labels = function(x) paste0(x, "%"),
+                     limits = c(0, 100)) +
+  scale_fill_manual(
+    values = c("Adjacent_normal" = "blue",
+               "Tumor" = "red"),
+    name = "Tissue Type",
+    labels = c("Normal", "Tumor")
+  ) +
+  labs(title = "% Cell Type by Condition",
+       x = "Cell Type",
+       y = "Percentage (%)") +
+  theme_classic() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    legend.position = "right"
+  )
+
+p1
+
+# % Cell type by Tissue
+df_tissue <- meta %>%
+  group_by(ManualAnnotation, tissue) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(ManualAnnotation) %>%
+  mutate(percent = n / sum(n) * 100)
+
+p2 <- ggplot(df_tissue,
+             aes(x = ManualAnnotation, y = percent, fill = tissue)) +
+  geom_bar(stat = "identity", width = 0.8) +
+  coord_flip() +
+  scale_y_continuous(labels = function(x) paste0(x, "%"),
+                     limits = c(0, 100)) +
+  scale_fill_manual(
+    values = c("Adjacent_normal" = "blue",
+               "Tumor" = "red",
+               "PBMC" = "yellow"),
+    name = "Tissue Type",
+    labels = c("Normal", "PBMC", "Tumor")
+  ) +
+  labs(title = "% Cell Type by Tumor Locations",
+       x = "Cell Type",
+       y = "Percentage (%)") +
+  theme_classic() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    legend.position = "right"
+  )
+
+p2
+
+# Total Cell Numbers
+meta$ManualAnnotation <- as.character(unlist(meta$ManualAnnotation))
+str(meta$ManualAnnotation)
+
+df_total <- as.data.frame(table(meta$ManualAnnotation))
+colnames(df_total) <- c("ManualAnnotation", "total_cells")
+
+p3 <- ggplot(df_total,
+             aes(x = total_cells, y = ManualAnnotation)) +
+  labs(title = "Total Number of Cell Types",
+       x = "Cell Counts",
+       y = "Cell Type") + 
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme_classic()
+
+p3
+
+# Combine
+p1 | p2 | p3
+
+#____________________________________________________________#
+# FIGURE 9 - GLMM 
+#____________________________________________________________#
+
